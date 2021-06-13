@@ -212,3 +212,41 @@ class CUTModel(BaseModel):
             total_nce_loss += loss.mean()
 
         return total_nce_loss / n_layers
+
+
+class WCUTModel(CUTModel):
+    def __init__(self, opt):
+        CUTModel.__init__(self, opt)
+
+    def calculate_NCE_loss(self, src, tgt):
+        n_layers = len(self.nce_layers)
+        feat_q = self.netG(tgt, self.nce_layers, encode_only=True)
+
+        B,C,H,W = feat_q.shape
+
+        if self.opt.flip_equivariance and self.flipped_for_equivariance:
+            feat_q = [torch.flip(fq, [3]) for fq in feat_q]
+
+        feat_k = self.netG(src, self.nce_layers, encode_only=True)
+        feat_k_pool, sample_ids = self.netF(feat_k, self.opt.num_patches, None)
+        feat_q_pool, _ = self.netF(feat_q, self.opt.num_patches, sample_ids)
+
+        total_nce_loss = 0.0
+
+        def ids_to_weighted(id_list):
+            y = [_%H for _ in id_list]
+            x = [_//H for _ in id_list]
+            x = feat_q.new_tensor(x).detach()
+            y = feat_q.new_tensor(y).detach()
+            disx = (x.view(1,-1) - x.view(-1,1))**2
+            disy = (y.view(1,-1) - y.view(-1,1))**2
+            dis = (disx+disy)**0.5
+            dis = dis/max(torch.max(dis),0.01)
+            return dis
+
+        for f_q, f_k, crit, nce_layer,ids in zip(feat_q_pool, feat_k_pool, self.criterionNCE, self.nce_layers,sample_ids):
+            weight = ids_to_weighted(ids) * self.opt.lam_weighted
+            loss = crit(f_q, f_k,weight) * self.opt.lambda_NCE
+            total_nce_loss += loss.mean()
+
+        return total_nce_loss / n_layers
