@@ -4,7 +4,10 @@ from options.train_options import TrainOptions
 from data import create_dataset
 from models import create_model
 from util.visualizer import Visualizer
-
+from util.util import tensor2im
+from tensorboardX import SummaryWriter
+import os
+from os.path import join
 
 if __name__ == '__main__':
     opt = TrainOptions().parse()   # get training options
@@ -15,6 +18,7 @@ if __name__ == '__main__':
     print('The number of training images = %d' % dataset_size)
 
     visualizer = Visualizer(opt)   # create a visualizer that display/save images and plots
+    writer = SummaryWriter(join(opt.checkpoints_dir, opt.name))
     opt.visualizer = visualizer
     total_iters = 0                # the total number of training iterations
 
@@ -52,13 +56,17 @@ if __name__ == '__main__':
             if total_iters % opt.display_freq == 0:   # display images on visdom and save images to a HTML file
                 save_result = total_iters % opt.update_html_freq == 0
                 model.compute_visuals()
-                visualizer.display_current_results(model.get_current_visuals(), epoch, save_result)
+                for name, img_tensor in model.get_current_visuals().items():
+                    img_npy = tensor2im(img_tensor).transpose(2, 0, 1)
+                    writer.add_image(name, img_npy, total_iters)
+                # visualizer.display_current_results(model.get_current_visuals(), epoch, save_result)
 
             if total_iters % opt.print_freq == 0:    # print training losses and save logging information to the disk
                 losses = model.get_current_losses()
                 visualizer.print_current_losses(epoch, epoch_iter, losses, optimize_time, t_data)
-                if opt.display_id is None or opt.display_id > 0:
-                    visualizer.plot_current_losses(epoch, float(epoch_iter) / dataset_size, losses)
+                writer.add_scalars('losses', losses, total_iters)
+                # if opt.display_id is None or opt.display_id > 0:
+                #     visualizer.plot_current_losses(epoch, float(epoch_iter) / dataset_size, losses)
 
             if total_iters % opt.save_latest_freq == 0:   # cache our latest model every <save_latest_freq> iterations
                 print('saving the latest model (epoch %d, total_iters %d)' % (epoch, total_iters))
