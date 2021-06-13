@@ -43,8 +43,8 @@ class PatchNCELoss(nn.Module):
         # diagonal entries are similarity between same features, and hence meaningless.
         # just fill the diagonal with very small number, which is exp(-10) and almost zero
         diagonal = torch.eye(npatches, device=feat_q.device, dtype=self.mask_dtype)[None, :, :]
-        if weighted:
-            l_neg_curbatch = l_neg_curbatch*weighted
+        # if weighted:
+        #     l_neg_curbatch = l_neg_curbatch*weighted
         l_neg_curbatch.masked_fill_(diagonal, -10.0)
         l_neg = l_neg_curbatch.view(-1, npatches)
 
