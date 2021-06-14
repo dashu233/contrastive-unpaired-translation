@@ -562,7 +562,7 @@ class PatchSampleF(nn.Module):
                 if patch_ids is not None:
                     patch_id = patch_ids[feat_id]
                 else:
-                    print('feats[0]:',feats[0].device)
+                    print('feats[0]:',feats[0].device,'len:',feat_reshape.shape[1])
                     patch_id = torch.randperm(feat_reshape.shape[1], device=feats[0].device)
                     patch_id = patch_id[:int(min(num_patches, patch_id.shape[0]))]  # .to(patch_ids.device)
                 x_sample = feat_reshape[:, patch_id, :].flatten(0, 1)  # reshape(-1, x.shape[1])
