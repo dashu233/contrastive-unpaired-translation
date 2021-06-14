@@ -192,7 +192,7 @@ class CUTModel(BaseModel):
         else:
             loss_NCE_both = self.loss_NCE
 
-        self.loss_G = self.loss_G_GAN + loss_NCE_both
+        self.loss_G = torch.sum(self.loss_G_GAN) + torch.sum(loss_NCE_both)
         return self.loss_G
 
     def calculate_NCE_loss(self, src, tgt):
