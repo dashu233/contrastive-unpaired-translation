@@ -53,5 +53,5 @@ class PatchNCELoss(nn.Module):
         print('out shape:',out.shape)
         loss = self.cross_entropy_loss(out, torch.zeros(out.size(0), dtype=torch.int64,
                                                             device=feat_q.device))
-
+        print('loss:',loss.shape)
         return loss
