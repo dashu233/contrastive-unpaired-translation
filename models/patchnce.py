@@ -50,6 +50,7 @@ class PatchNCELoss(nn.Module):
 
         out = torch.cat((l_pos, l_neg), dim=1) / self.opt.nce_T
 
+        print('out shape:',out.shape)
         loss = self.cross_entropy_loss(out, torch.zeros(out.size(0), dtype=torch.int64,
                                                             device=feat_q.device))
 
