@@ -356,6 +356,7 @@ class GANLoss(nn.Module):
         self.register_buffer('real_label', torch.tensor(target_real_label))
         self.register_buffer('fake_label', torch.tensor(target_fake_label))
         self.gan_mode = gan_mode
+        print('gan_mode:',gan_mode)
         if gan_mode == 'lsgan':
             self.loss = nn.MSELoss()
         elif gan_mode == 'vanilla':
@@ -395,6 +396,8 @@ class GANLoss(nn.Module):
         bs = prediction.size(0)
         if self.gan_mode in ['lsgan', 'vanilla']:
             target_tensor = self.get_target_tensor(prediction, target_is_real)
+            #print('prediction:',prediction)
+            #print('target_tensor:',target_tensor)
             loss = self.loss(prediction, target_tensor)
         elif self.gan_mode == 'wgangp':
             if target_is_real:
@@ -453,8 +456,7 @@ class Normalize(nn.Module):
         self.power = power
 
     def forward(self, x):
-        norm = x.pow(self.power).sum(1, keepdim=True).pow(1. / self.power)
-        out = x.div(norm + 1e-7)
+        out = torch.nn.functional.normalize(x,dim=1)
         return out
 
 
@@ -557,15 +559,15 @@ class PatchSampleF(nn.Module):
             self.create_mlp(feats)
         for feat_id, feat in enumerate(feats):
             B, H, W = feat.shape[0], feat.shape[2], feat.shape[3]
-            feat_reshape = feat.permute(0, 2, 3, 1).flatten(1, 2)
+            feat_reshape = feats[feat_id].permute(0, 2, 3, 1).flatten(1, 2)
             if num_patches > 0:
                 if patch_ids is not None:
                     patch_id = patch_ids[feat_id]
                 else:
-                    print('feats[0]:',feats[0].device,'len:',feat_reshape.shape[1])
-                    patch_id = torch.randperm(feat_reshape.shape[1], device=feats[0].device)
-                    patch_id = patch_id[:int(min(num_patches, patch_id.shape[0]))]  # .to(patch_ids.device)
+                    pm = np.random.permutation(int(feat_reshape.shape[1]))[:int(min(num_patches, int(feat_reshape.shape[1])))]
+                    patch_id = torch.tensor(pm,dtype=torch.long,device=feats[0].device)
                 x_sample = feat_reshape[:, patch_id, :].flatten(0, 1)  # reshape(-1, x.shape[1])
+
             else:
                 x_sample = feat_reshape
                 patch_id = []
