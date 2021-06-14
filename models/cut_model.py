@@ -169,6 +169,7 @@ class CUTModel(BaseModel):
 
         # combine loss and calculate gradients
         self.loss_D = (self.loss_D_fake + self.loss_D_real) * 0.5
+        print(self.loss_D)
         return self.loss_D
 
     def compute_G_loss(self):
