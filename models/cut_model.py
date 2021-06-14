@@ -246,8 +246,9 @@ class WCUTModel(CUTModel):
             return dis
 
         for f_q, f_k, crit, nce_layer,ids in zip(feat_q_pool, feat_k_pool, self.criterionNCE, self.nce_layers,sample_ids):
-            weight = ids_to_weighted(ids) * self.opt.lam_weighted
-            loss = crit(f_q, f_k,weight) * self.opt.lambda_NCE
+            #weight = ids_to_weighted(ids) * self.opt.lam_weighted
+            #loss = crit(f_q, f_k,weight) * self.opt.lambda_NCE
+            loss = crit(f_q, f_k) * self.opt.lambda_NCE
             total_nce_loss += loss.mean()
 
         return total_nce_loss / n_layers
