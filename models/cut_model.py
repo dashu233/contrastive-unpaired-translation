@@ -35,6 +35,8 @@ class CUTModel(BaseModel):
         parser.add_argument('--flip_equivariance',
                             type=util.str2bool, nargs='?', const=True, default=False,
                             help="Enforce flip-equivariance as additional regularization. It's used by FastCUT, but not CUT")
+        parser.add_argument('--weighted_neg',type=bool,default=False)
+        parser.add_argument('--prob_weighted',type=bool,default=False)
 
         parser.set_defaults(pool_size=0)  # no image pooling
 
@@ -208,47 +210,28 @@ class CUTModel(BaseModel):
         feat_q_pool, _ = self.netF(feat_q, self.opt.num_patches, sample_ids)
 
         total_nce_loss = 0.0
-        for f_q, f_k, crit, nce_layer in zip(feat_q_pool, feat_k_pool, self.criterionNCE, self.nce_layers):
-            loss = crit(f_q, f_k) * self.opt.lambda_NCE
-            total_nce_loss += loss.mean()
+        if self.opt.weighted_neg:
+            tmp = 0
+            for f_q, f_k, crit, nce_layer, ids in zip(feat_q_pool, feat_k_pool, self.criterionNCE, self.nce_layers,
+                                                      sample_ids):
+                weight = self.ids_to_weighted(ids,feat_k[tmp].shape[3],f_k.device)
+                loss = crit(f_q, f_k, weight) * self.opt.lambda_NCE
+                total_nce_loss += loss.mean()
+                tmp += 1
+        else:
+            for f_q, f_k, crit, nce_layer in zip(feat_q_pool, feat_k_pool, self.criterionNCE, self.nce_layers):
+                loss = crit(f_q, f_k) * self.opt.lambda_NCE
+                total_nce_loss += loss.mean()
 
         return total_nce_loss / n_layers
 
-
-class WCUTModel(CUTModel):
-    def __init__(self, opt):
-        CUTModel.__init__(self, opt)
-
-    def calculate_NCE_loss(self, src, tgt):
-        n_layers = len(self.nce_layers)
-        feat_q = self.netG(tgt, self.nce_layers, encode_only=True)
-
-        B,C,H,W = feat_q.shape
-
-        if self.opt.flip_equivariance and self.flipped_for_equivariance:
-            feat_q = [torch.flip(fq, [3]) for fq in feat_q]
-
-        feat_k = self.netG(src, self.nce_layers, encode_only=True)
-        if self.opt.netF == 'mlp_sample' and not self.netF.mlp_init:
-            self.netF.create_mlp(feat_k)
-        feat_k_pool, sample_ids = self.netF(feat_k, self.opt.num_patches, None)
-        feat_q_pool, _ = self.netF(feat_q, self.opt.num_patches, sample_ids)
-
-        total_nce_loss = 0.0
-
-        def ids_to_weighted(id_list):
-            y = [_%H for _ in id_list]
-            x = [_//H for _ in id_list]
-            x = feat_q.new_tensor(x).detach()
-            y = feat_q.new_tensor(y).detach()
-            disx = (x.view(1,-1) - x.view(-1,1))**2
-            disy = (y.view(1,-1) - y.view(-1,1))**2
-            dis = (disx+disy)**0.5
-            dis = dis/max(torch.max(dis),0.01)
-            return dis
-
-        for f_q, f_k, crit, nce_layer,ids in zip(feat_q_pool, feat_k_pool, self.criterionNCE, self.nce_layers,sample_ids):
-            loss = crit(f_q, f_k) * self.opt.lambda_NCE
-            total_nce_loss += loss.mean()
-
-        return total_nce_loss / n_layers
+    def ids_to_weighted(self,id_list, H, device):
+        y = [_ % H for _ in id_list]
+        x = [_ // H for _ in id_list]
+        x = torch.tensor(x, device=device, dtype=torch.float)
+        y = torch.tensor(y, device=device, dtype=torch.float)
+        disx = (x.view(1, -1) - x.view(-1, 1)) ** 2
+        disy = (y.view(1, -1) - y.view(-1, 1)) ** 2
+        dis = (disx + disy) ** 0.5
+        dis = dis / max(torch.max(dis), 0.01)
+        return dis
