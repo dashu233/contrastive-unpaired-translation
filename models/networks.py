@@ -279,6 +279,10 @@ def define_F(input_nc, netF, norm='batch', use_dropout=False, init_type='normal'
         net = PatchSampleF(use_mlp=True, init_type=init_type, init_gain=init_gain, gpu_ids=gpu_ids, nc=opt.netF_nc)
     elif netF == 'strided_conv':
         net = StridedConvF(init_type=init_type, init_gain=init_gain, gpu_ids=gpu_ids)
+    elif netF == 'mlp_samplev2':
+        net = PatchSampleFv2(use_mlp=True, init_type=init_type, init_gain=init_gain, gpu_ids=gpu_ids, nc=opt.netF_nc)
+    elif netF == 'mapping':
+        net = MappingF(input_nc, gpu_ids=gpu_ids)
     else:
         raise NotImplementedError('projection model name [%s] is not recognized' % netF)
     return init_net(net, init_type, init_gain, gpu_ids)
@@ -363,6 +367,8 @@ class GANLoss(nn.Module):
             self.loss = nn.BCEWithLogitsLoss()
         elif gan_mode in ['wgangp', 'nonsaturating']:
             self.loss = None
+        elif gan_mode == 'hinge':
+            self.loss = None
         else:
             raise NotImplementedError('gan mode %s not implemented' % gan_mode)
 
@@ -409,6 +415,13 @@ class GANLoss(nn.Module):
                 loss = F.softplus(-prediction).view(bs, -1).mean(dim=1)
             else:
                 loss = F.softplus(prediction).view(bs, -1).mean(dim=1)
+        elif self.gan_mode == 'hinge':
+            if target_is_real:
+                minvalue = torch.min(prediction - 1, torch.zeros(prediction.shape).to(prediction.device))
+                loss = -torch.mean(minvalue)
+            else:
+                minvalue = torch.min(-prediction - 1,torch.zeros(prediction.shape).to(prediction.device))
+                loss = -torch.mean(minvalue)
         return loss
 
 
@@ -456,7 +469,8 @@ class Normalize(nn.Module):
         self.power = power
 
     def forward(self, x):
-        out = torch.nn.functional.normalize(x,dim=1)
+        norm = x.pow(self.power).sum(1, keepdim=True).pow(1. / self.power)
+        out = x.div(norm + 1e-7)
         return out
 
 
@@ -483,6 +497,30 @@ class ReshapeF(nn.Module):
         x_reshape = x.permute(0, 2, 3, 1).flatten(0, 2)
         return self.l2norm(x_reshape)
 
+
+# function for bicut
+class MappingF(nn.Module):
+    def __init__(self, in_layer=4, gpu_ids=[], nc=256, patch_num=256, dim=64, init_type='normal', init_gain=0.02):
+        super().__init__()
+        self.init_type = init_type
+        self.nc=nc
+        self.dim=dim
+        self.in_layer=in_layer
+        self.patch_num = patch_num
+        self.init_type = init_type
+        self.init_gain = init_gain
+        self.gpu_ids = gpu_ids
+        avg = nn.AdaptiveAvgPool2d(1)
+        conv = nn.Conv2d(in_layer, dim, 3, stride=2)
+        self.model = nn.Sequential(*[conv, nn.ReLU(), avg, nn.Flatten(), nn.Linear(dim,dim), nn.ReLU(), nn.Linear(dim, dim)])
+        init_net(self.model, self.init_type, self.init_gain, self.gpu_ids)
+        self.l2norm = Normalize(2)
+
+    def forward(self, x):
+        x = x.view(1, -1, self.patch_num, self.nc)
+        x = self.model(x)
+        x_norm = self.l2norm(x)
+        return x_norm
 
 class StridedConvF(nn.Module):
     def __init__(self, init_type='normal', init_gain=0.02, gpu_ids=[]):
@@ -559,15 +597,14 @@ class PatchSampleF(nn.Module):
             self.create_mlp(feats)
         for feat_id, feat in enumerate(feats):
             B, H, W = feat.shape[0], feat.shape[2], feat.shape[3]
-            feat_reshape = feats[feat_id].permute(0, 2, 3, 1).flatten(1, 2)
+            feat_reshape = feat.permute(0, 2, 3, 1).flatten(1, 2)
             if num_patches > 0:
                 if patch_ids is not None:
                     patch_id = patch_ids[feat_id]
                 else:
-                    pm = np.random.permutation(int(feat_reshape.shape[1]))[:int(min(num_patches, int(feat_reshape.shape[1])))]
-                    patch_id = torch.tensor(pm,dtype=torch.long,device=feats[0].device)
-                x_sample = feat_reshape[:, patch_id, :].flatten(0, 1)  # reshape(-1, x.shape[1])
-
+                    patch_id = torch.randperm(feat_reshape.shape[1], device=feats[0].device)
+                    patch_id = patch_id[:int(min(num_patches, patch_id.shape[0]))]  # .to(patch_ids.device)
+                x_sample = feat_reshape[:, patch_id, :].flatten(0, 1)  # b,num_patch, c
             else:
                 x_sample = feat_reshape
                 patch_id = []
@@ -582,6 +619,55 @@ class PatchSampleF(nn.Module):
             return_feats.append(x_sample)
         return return_feats, return_ids
 
+class PatchSampleFv2(nn.Module):
+    def __init__(self, use_mlp=False, init_type='normal', init_gain=0.02, nc=256, gpu_ids=[]):
+        # potential issues: currently, we use the same patch_ids for multiple images in the batch
+        super(PatchSampleFv2, self).__init__()
+        self.l2norm = Normalize(2)
+        self.use_mlp = use_mlp
+        self.nc = nc  # hard-coded
+        self.mlp_init = False
+        self.init_type = init_type
+        self.init_gain = init_gain
+        self.gpu_ids = gpu_ids
+
+    def create_mlp(self, feats):
+        for mlp_id, feat in enumerate(feats):
+            input_nc = feat.shape[1]
+            mlp = nn.Sequential(*[nn.Linear(input_nc, self.nc), nn.ReLU(), nn.Linear(self.nc, self.nc)])
+            if len(self.gpu_ids) > 0:
+                mlp.cuda()
+            setattr(self, 'mlp_%d' % mlp_id, mlp)
+        init_net(self, self.init_type, self.init_gain, self.gpu_ids)
+        self.mlp_init = True
+
+    def forward(self, feats, num_patches=64, patch_ids=None):
+        return_ids = []
+        return_feats = []
+        if self.use_mlp and not self.mlp_init:
+            self.create_mlp(feats)
+        for feat_id, feat in enumerate(feats):
+            B, C, H, W = feat.size()
+            feat_reshape = feat.permute(0, 2, 3, 1).flatten(1, 2)
+            if num_patches > 0:
+                if patch_ids is not None:
+                    patch_id = patch_ids[feat_id]
+                else:
+                    patch_id = torch.randperm(feat_reshape.shape[1], device=feats[0].device)
+                    patch_id = patch_id[:int(min(num_patches, patch_id.shape[0]))]  # .to(patch_ids.device)
+                x_sample = feat_reshape[:, patch_id, :] # b, num_patch, c
+            else:
+                x_sample = feat_reshape
+                patch_id = []
+            if self.use_mlp:
+                mlp = getattr(self, 'mlp_%d' % feat_id)
+                x_sample = mlp(x_sample)
+            return_ids.append(patch_id)
+            x_sample = self.l2norm(x_sample)
+            # if num_patches == 0:
+            #     x_sample = x_sample.permute(0, 2, 1).reshape([B, x_sample.shape[-1], H, W])
+            return_feats.append(x_sample)
+        return return_feats, return_ids
 
 class G_Resnet(nn.Module):
     def __init__(self, input_nc, output_nc, nz, num_downs, n_res, ngf=64,

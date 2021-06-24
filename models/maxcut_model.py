@@ -2,22 +2,17 @@ import numpy as np
 import torch
 from .base_model import BaseModel
 from . import networks
-from .patchnce import PatchNCELoss
+from .patchnce import PatchNCELoss_maxcut as PatchNCELoss
 import util.util as util
-import time
 
-class CUTModel(BaseModel):
-    """ This class implements CUT and FastCUT model, described in the paper
-    Contrastive Learning for Unpaired Image-to-Image Translation
-    Taesung Park, Alexei A. Efros, Richard Zhang, Jun-Yan Zhu
-    ECCV, 2020
 
-    The code borrows heavily from the PyTorch implementation of CycleGAN
-    https://github.com/junyanz/pytorch-CycleGAN-and-pix2pix
+class MaxCUTModel(BaseModel):
+    """ class for MaxCUT implementation, which defines point (same feature map)
+    with maximum cosine similarity as positive pairs (cluster assumption).
     """
     @staticmethod
     def modify_commandline_options(parser, is_train=True):
-        """  Configures options specific for CUT model
+        """  Configures options specific for MaxCUT model
         """
         parser.add_argument('--CUT_mode', type=str, default="CUT", choices='(CUT, cut, FastCUT, fastcut)')
 
@@ -28,17 +23,13 @@ class CUTModel(BaseModel):
         parser.add_argument('--nce_includes_all_negatives_from_minibatch',
                             type=util.str2bool, nargs='?', const=True, default=False,
                             help='(used for single image translation) If True, include the negatives from the other samples of the minibatch when computing the contrastive loss. Please see models/patchnce.py for more details.')
-        parser.add_argument('--netF', type=str, default='mlp_sample', choices=['sample', 'reshape', 'mlp_sample'], help='how to downsample the feature map')
+        parser.add_argument('--netF', type=str, default='mlp_samplev2', choices=['sample', 'reshape', 'mlp_sample'], help='how to downsample the feature map')
         parser.add_argument('--netF_nc', type=int, default=256)
         parser.add_argument('--nce_T', type=float, default=0.07, help='temperature for NCE loss')
         parser.add_argument('--num_patches', type=int, default=256, help='number of patches per layer')
         parser.add_argument('--flip_equivariance',
                             type=util.str2bool, nargs='?', const=True, default=False,
                             help="Enforce flip-equivariance as additional regularization. It's used by FastCUT, but not CUT")
-        parser.add_argument('--weighted_neg',type=bool,default=False)
-        parser.add_argument('--prob_weighted',type=bool,default=False)
-        parser.add_argument('--weighted_lambda',type=float,default=4.0)
-
 
         parser.set_defaults(pool_size=0)  # no image pooling
 
@@ -201,40 +192,20 @@ class CUTModel(BaseModel):
 
     def calculate_NCE_loss(self, src, tgt):
         n_layers = len(self.nce_layers)
+        # extract backbone features from encoder
         feat_q = self.netG(tgt, self.nce_layers, encode_only=True)
-
 
         if self.opt.flip_equivariance and self.flipped_for_equivariance:
             feat_q = [torch.flip(fq, [3]) for fq in feat_q]
+
         feat_k = self.netG(src, self.nce_layers, encode_only=True)
-
-        feat_k_pool, sample_ids = self.netF(feat_k, self.opt.num_patches, None)
-        feat_q_pool, _ = self.netF(feat_q, self.opt.num_patches, sample_ids)
-
+        # sample negative samples from feature map
+        # feat_k_pool, sample_ids = self.netF(feat_k, self.opt.num_patches, None)
+        feat_k_pool, _ = self.netF(feat_k, 0, None) #b, c, h, w
+        feat_q_pool, sample_ids = self.netF(feat_q, self.opt.num_patches, None)
         total_nce_loss = 0.0
-        if self.opt.weighted_neg:
-            tmp = 0
-            for f_q, f_k, crit, nce_layer, ids in zip(feat_q_pool, feat_k_pool, self.criterionNCE, self.nce_layers,
-                                                      sample_ids):
-                weight = self.ids_to_weighted(ids,feat_k[tmp].shape[3],f_k.device)
-                loss = crit(f_q, f_k, weight) * self.opt.lambda_NCE
-                total_nce_loss += loss.mean()
-                tmp += 1
-        else:
-            #print('normal')
-            for f_q, f_k, crit, nce_layer in zip(feat_q_pool, feat_k_pool, self.criterionNCE, self.nce_layers):
-                loss = crit(f_q, f_k) * self.opt.lambda_NCE
-                total_nce_loss += loss.mean()
+        for (f_q, f_k, sample_id, crit) in zip(feat_q_pool, feat_k_pool, sample_ids, self.criterionNCE):
+            loss = crit(f_q, f_k, sample_id) * self.opt.lambda_NCE
+            total_nce_loss += loss.mean()
 
         return total_nce_loss / n_layers
-
-    def ids_to_weighted(self,id_list, H, device):
-        y = [_ % H for _ in id_list]
-        x = [_ // H for _ in id_list]
-        x = torch.tensor(x, device=device, dtype=torch.float)
-        y = torch.tensor(y, device=device, dtype=torch.float)
-        disx = (x.view(1, -1) - x.view(-1, 1)) ** 2
-        disy = (y.view(1, -1) - y.view(-1, 1)) ** 2
-        dis = (disx + disy) ** 0.5
-        dis = dis / max(torch.max(dis), 0.01)
-        return dis*self.opt.weighted_lambda
